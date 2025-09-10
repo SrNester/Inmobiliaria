@@ -1,0 +1,156 @@
+version: '3.8'
+
+services:
+  # Base de datos PostgreSQL
+  db:
+    image: postgis/postgis:15-3.3
+    container_name: inmomax_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: inmomax_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - inmomax_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Backend FastAPI
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: inmomax_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres123@db:5432/inmomax_db
+      SECRET_KEY: tu_clave_secreta_super_segura_aqui
+      ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 30
+      ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+      - backend_uploads:/app/uploads
+    networks:
+      - inmomax_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend Next.js
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: inmomax_frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api
+      NEXT_PUBLIC_SITE_URL: http://localhost:3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - inmomax_network
+
+  # Redis para cache (opcional)
+  redis:
+    image: redis:7-alpine
+    container_name: inmomax_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - inmomax_network
+    command: redis-server --appendonly yes
+
+  # Nginx reverse proxy (producción)
+  nginx:
+    image: nginx:alpine
+    container_name: inmomax_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - inmomax_network
+    profiles:
+      - production
+
+  # Adminer para administración de DB (desarrollo)
+  adminer:
+    image: adminer
+    container_name: inmomax_adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+    networks:
+      - inmomax_network
+    profiles:
+      - development
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  backend_uploads:
+    driver: local
+
+networks:
+  inmomax_network:
+    driver: bridge
+
+# Comandos útiles:
+#
+# Desarrollo (sin nginx):
+# docker-compose up -d
+#
+# Producción (con nginx):
+# docker-compose --profile production up -d
+#
+# Solo desarrollo con adminer:
+# docker-compose --profile development up -d
+#
+# Ver logs:
+# docker-compose logs -f [servicio]
+#
+# Reconstruir servicios:
+# docker-compose up -d --build
+#
+# Parar todos los servicios:
+# docker-compose down
+#
+# Parar y eliminar volúmenes:
+# docker-compose down -v
